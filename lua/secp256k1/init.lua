@@ -1,5 +1,4 @@
 local ffi = require("ffi")
-local sha256 = require("secp256k1.sha256")
 
 local function to_hex(cbytes, len)
     local v = ""
@@ -75,8 +74,8 @@ function M.parse_secret_key(hex)
     if not lib.secp256k1_keypair_create(ctx, keypair, keybytes) then return end
     return {
         keypair,
-        public = function() return M.public_key(keypair) end,
-        sign = function(msg) M.sign(keypair, msg) end
+        public = function(_self) return M.public_key(keypair) end,
+        sign = function(_self, msg) return M.sign(keypair, msg) end
     }
 end
 
@@ -88,7 +87,24 @@ function M.public_key(keypair)
     end
     return {
         xonly,
-        serialize = function() return M.serialize_public_key(xonly) end
+        serialize = function(_self) return M.serialize_public_key(xonly) end,
+        verify = function(_self, msg32, sig)
+            return M.verify(xonly, msg32, sig)
+        end
+    }
+end
+
+function M.parse_public_key(xonly_hex)
+    local xonly = ffi.new("secp256k1_xonly_pubkey*")
+    if not lib.secp256k1_xonly_pubkey_parse(ctx, xonly, from_hex(xonly_hex)) then
+        return
+    end
+    return {
+        xonly,
+        serialize = function(_self) return M.serialize_public_key(xonly) end,
+        verify = function(_self, msg32, sig)
+            return M.verify(xonly, msg32, sig)
+        end
     }
 end
 
@@ -105,15 +121,12 @@ function M.sign(keypair, msg32)
     if not lib.secp256k1_schnorrsig_sign32(ctx, sig64, msg32, keypair, nil) then
         return
     end
-    return to_hex(sig64)
+    return to_hex(sig64, 64)
 end
 
-local sec = M.parse_secret_key(
-                "11c26416500cf4d3cbe548861ec76a3b2014d9a5e03fe9ecf8aefbfe55d70741")
-print(sec:public():serialize())
-local msg32 = sha256.sha256("banana")
-print("msg32", msg32)
-local sig = sec:sign(msg32)
-print(sig)
+function M.verify(xonly, msg32, sig)
+    local sig64 = from_hex(sig)
+    return lib.secp256k1_schnorrsig_verify(ctx, sig64, msg32, 32, xonly) == 1
+end
 
 return M

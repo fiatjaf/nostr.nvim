@@ -7,24 +7,14 @@
 -- LICENSE: MIT (the same license as Lua itself)
 -- URL:     https://github.com/Egor-Skriptunoff/pure_lua_SHA
 ---------------------------------------------------------------------------
-local unpack, table_concat, byte, char, string_rep, sub, gsub, gmatch,
-      string_format, floor, math_min, math_max, tonumber = table.unpack or
-                                                               unpack,
-                                                           table.concat,
-                                                           string.byte,
-                                                           string.char,
-                                                           string.rep,
-                                                           string.sub,
-                                                           string.gsub,
-                                                           string.gmatch,
-                                                           string.format,
-                                                           math.floor, math.min,
-                                                           math.max, tonumber
+local unpack, table_concat, byte, char, string_rep, sub, floor, math_min,
+      math_max = table.unpack or unpack, table.concat, string.byte, string.char,
+                 string.rep, string.sub, math.floor, math.min, math.max
 
 local bit = require "bit"
 local ffi = require "ffi"
 
-local AND, OR, XOR, SHL, SHR, ROL, ROR, NORM, HEX
+local AND, OR, XOR, SHL, SHR, ROL, ROR, NORM
 -- Only low 32 bits of function arguments matter, high bits are ignored
 -- The result of all functions (except HEX) is an integer inside "correct range":
 --    for "bit" library:    (-2^31)..(2^31-1)
@@ -39,28 +29,16 @@ SHR = bit.rshift -- second argument is integer 0..31
 ROL = bit.rol or bit.lrotate -- second argument is integer 0..31
 ROR = bit.ror or bit.rrotate -- second argument is integer 0..31
 NORM = bit.tobit -- only for LuaJIT
-HEX = bit.tohex -- returns string of 8 lowercase hexadecimal digits
-
-HEX = HEX or pcall(string_format, "%x", 2 ^ 31) and
-          function(x) -- returns string of 8 lowercase hexadecimal digits
-        return string_format("%08x", x % 4294967296)
-    end or function(x) -- for OpenWrt's dialect of Lua
-    return string_format("%08x", (x + 2 ^ 31) % 2 ^ 32 - 2 ^ 31)
-end
 
 --------------------------------------------------------------------------------
 -- CREATING OPTIMIZED INNER LOOP
 --------------------------------------------------------------------------------
-
--- Inner loop functions
-local sha256_feed_64
 
 -- Arrays of SHA-2 "magic numbers" (in "INT64" and "FFI" branches "*_lo" arrays contain 64-bit values)
 local sha2_K_hi, sha2_H_lo, sha2_H_hi = {}, {}, {}
 local sha2_H_ext256 = {[224] = {}, [256] = sha2_H_hi}
 local sha2_H_ext512_lo, sha2_H_ext512_hi = {[384] = {}, [512] = sha2_H_lo},
                                            {[384] = {}, [512] = sha2_H_hi}
-local HEX64 -- defined only for branches that internally use 64-bit integers: "INT64" and "FFI"
 local sigma = {
     {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
     {15, 11, 5, 9, 10, 16, 14, 7, 2, 13, 1, 3, 12, 8, 6, 4},
@@ -82,7 +60,7 @@ end
 sigma[11], sigma[12] = sigma[1], sigma[2]
 
 -- SHA256 implementation for "LuaJIT with FFI" branch
-function sha256_feed_64(H, str, offs, size)
+local function sha256_feed_64(H, str, offs, size)
     -- offs >= 0, size >= 0, size is multiple of 64
     local W, K = common_W_FFI_int32, sha2_K_hi
     for pos = offs, offs + size - 1, 64 do
@@ -168,13 +146,6 @@ end
 local int64 = ffi.typeof "int64_t"
 local hi_factor = int64(2 ^ 32)
 
-HEX64 = HEX
-
-local A5_long = 0xA5A5A5A5 * int64(2 ^ 32 + 1)
--- It's impossible to use constant 0xA5A5A5A5A5A5A5A5LL because it will raise syntax error on other Lua versions
-
-local function XORA5(long, long2) return XOR(long, long2 or A5_long) end
-
 --------------------------------------------------------------------------------
 -- MAGIC NUMBERS CALCULATOR
 --------------------------------------------------------------------------------
@@ -241,33 +212,15 @@ do
     until idx > 79
 end
 
--- Calculating IVs for SHA512/224 and SHA512/256
-for width = 224, 256, 32 do
-    local H_lo, H_hi = {}
-    if HEX64 then
-        for j = 1, 8 do H_lo[j] = XORA5(sha2_H_lo[j]) end
-    else
-        H_hi = {}
-        for j = 1, 8 do
-            H_lo[j] = XORA5(sha2_H_lo[j])
-            H_hi[j] = XORA5(sha2_H_hi[j])
-        end
-    end
-    -- sha512_feed_128(H_lo, H_hi, "SHA-512/" .. tostring(width) .. "\128" ..
-    --                     string_rep("\0", 115) .. "\88", 0, 128)
-    sha2_H_ext512_lo[width] = H_lo
-    sha2_H_ext512_hi[width] = H_hi
-end
-
 sha2_K_hi = ffi.new("uint32_t[?]", #sha2_K_hi + 1, 0, unpack(sha2_K_hi))
 
 --------------------------------------------------------------------------------
 -- MAIN FUNCTIONS
 --------------------------------------------------------------------------------
 
-local function sha256ext(width, message)
+local function sha256ext(message)
     -- Create an instance (private objects for current calculation)
-    local H, length, tail = {unpack(sha2_H_ext256[width])}, 0.0, ""
+    local H, length, tail = {unpack(sha2_H_ext256[256])}, 0.0, ""
 
     local function partial(message_part)
         if message_part then
@@ -307,10 +260,21 @@ local function sha256ext(width, message)
                 end
                 final_blocks = table_concat(final_blocks)
                 sha256_feed_64(H, final_blocks, 0, #final_blocks)
-                local max_reg = width / 32
-                for j = 1, max_reg do H[j] = HEX(H[j]) end
-                H = table_concat(H, "", 1, max_reg)
+                -- up to this point H is a list of 8 numbers
+                -- we convert these to a C-array and return that
+                local result = ffi.new("unsigned char[?]", 32)
+                for j = 1, 8 do
+                    local x = H[j]
+                    local base = (j - 1) * 4
+                    result[base] = AND(SHR(x, 24), 0xff)
+                    result[base + 1] = AND(SHR(x, 16), 0xff)
+                    result[base + 2] = AND(SHR(x, 8), 0xff)
+                    result[base + 3] = AND(x, 0xff)
+                end
+                return result
             end
+            print("H", H)
+            P(H)
             return H
         end
     end
@@ -326,90 +290,4 @@ local function sha256ext(width, message)
     end
 end
 
-local hex_to_bin, bin_to_hex, bin_to_base64, base64_to_bin
-do
-    function hex_to_bin(hex_string)
-        return (gsub(hex_string, "%x%x",
-                     function(hh) return char(tonumber(hh, 16)) end))
-    end
-
-    function bin_to_hex(binary_string)
-        return (gsub(binary_string, ".",
-                     function(c) return string_format("%02x", byte(c)) end))
-    end
-
-    local base64_symbols = {
-        ['+'] = 62,
-        ['-'] = 62,
-        [62] = '+',
-        ['/'] = 63,
-        ['_'] = 63,
-        [63] = '/',
-        ['='] = -1,
-        ['.'] = -1,
-        [-1] = '='
-    }
-    local symbol_index = 0
-    for _, pair in ipairs {'AZ', 'az', '09'} do
-        for ascii = byte(pair), byte(pair, 2) do
-            local ch = char(ascii)
-            base64_symbols[ch] = symbol_index
-            base64_symbols[symbol_index] = ch
-            symbol_index = symbol_index + 1
-        end
-    end
-
-    function bin_to_base64(binary_string)
-        local result = {}
-        for pos = 1, #binary_string, 3 do
-            local c1, c2, c3, c4 = byte(
-                                       sub(binary_string, pos, pos + 2) .. '\0',
-                                       1, -1)
-            result[#result + 1] = base64_symbols[floor(c1 / 4)] ..
-                                      base64_symbols[c1 % 4 * 16 +
-                                          floor(c2 / 16)] ..
-                                      base64_symbols[c3 and c2 % 16 * 4 +
-                                          floor(c3 / 64) or -1] ..
-                                      base64_symbols[c4 and c3 % 64 or -1]
-        end
-        return table_concat(result)
-    end
-
-    function base64_to_bin(base64_string)
-        local result, chars_qty = {}, 3
-        for pos, ch in gmatch(gsub(base64_string, '%s+', ''), '()(.)') do
-            local code = base64_symbols[ch]
-            if code < 0 then
-                chars_qty = chars_qty - 1
-                code = 0
-            end
-            local idx = pos % 4
-            if idx > 0 then
-                result[-idx] = code
-            else
-                local c1 = result[-1] * 4 + floor(result[-2] / 16)
-                local c2 = (result[-2] % 16) * 16 + floor(result[-3] / 4)
-                local c3 = (result[-3] % 4) * 64 + code
-                result[#result + 1] = sub(char(c1, c2, c3), 1, chars_qty)
-            end
-        end
-        return table_concat(result)
-    end
-
-end
-
-local sha = {
-    sha256 = function(message) return sha256ext(256, message) end, -- SHA-256
-    -- misc utilities:
-    hex_to_bin = hex_to_bin, -- converts hexadecimal representation to binary string
-    bin_to_hex = bin_to_hex, -- converts binary string to hexadecimal representation
-    base64_to_bin = base64_to_bin, -- converts base64 representation to binary string
-    bin_to_base64 = bin_to_base64, -- converts binary string to base64 representation
-    -- old style names for backward compatibility:
-    hex2bin = hex_to_bin,
-    bin2hex = bin_to_hex,
-    base642bin = base64_to_bin,
-    bin2base64 = bin_to_base64
-}
-
-return sha
+return sha256ext
