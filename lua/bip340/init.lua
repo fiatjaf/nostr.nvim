@@ -1,21 +1,5 @@
-local ffi = require("ffi")
-
-local function to_hex(cbytes, len)
-    local v = ""
-    for i = 0, len - 1 do v = v .. string.format("%02x", cbytes[i]) end
-    return v
-end
-
-local function from_hex(str)
-    local len = str:len() / 2
-    local bytes = ffi.new("unsigned char[?]", len)
-    for i = 0, len - 1 do
-        local v = str:sub(i * 2 + 1, i * 2 + 2)
-        local num = tonumber(v, 16)
-        bytes[i] = num
-    end
-    return bytes
-end
+local ffi = require "ffi"
+local utils = require "bip340.utils"
 
 ffi.cdef [[
   typedef struct secp256k1_context_struct secp256k1_context;
@@ -69,7 +53,7 @@ local ctx = lib.secp256k1_context_create(1)
 local M = {}
 
 function M.parse_secret_key(hex)
-    local keybytes = from_hex(hex)
+    local keybytes = utils.from_hex(hex)
     local keypair = ffi.new("secp256k1_keypair")
     if not lib.secp256k1_keypair_create(ctx, keypair, keybytes) then return end
     return {
