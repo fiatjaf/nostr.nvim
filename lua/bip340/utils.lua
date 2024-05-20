@@ -1,12 +1,14 @@
+local ffi = require 'ffi'
+
 local M = {}
 
-local function M.to_hex(cbytes, len)
+function M.to_hex(cbytes, len)
     local v = ""
     for i = 0, len - 1 do v = v .. string.format("%02x", cbytes[i]) end
     return v
 end
 
-local function M.from_hex(str)
+function M.from_hex(str)
     local len = str:len() / 2
     local bytes = ffi.new("unsigned char[?]", len)
     for i = 0, len - 1 do

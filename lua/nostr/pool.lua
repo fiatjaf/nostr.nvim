@@ -8,7 +8,10 @@ return function()
             if url:sub(1, 2) ~= 'ws' then url = 'wss://' .. url end
 
             local relay = pool[url]
-            if relay then done(relay) end
+            if relay then
+                done(relay)
+                return
+            end
 
             pool[url] = require('nostr.relay')(url, {
                 on_connect = done,
@@ -33,14 +36,17 @@ return function()
                 return false
             end
 
+            opts.on_close = opts.on_close or function() end
+            opts.on_eose = opts.on_eose or function() end
+
             local eoses = {0}
             local closes = {0}
             local closers = {}
 
             for _, url in ipairs(relays) do
-                total_relays = total_relays + 1
-
                 self.ensure_relay(url, function(relay)
+                    total_relays = total_relays + 1
+
                     local close = relay:subscribe(filter, {
                         on_event = function(evt)
                             if already_received(evt.id) then
@@ -50,10 +56,13 @@ return function()
                             opts.on_event(evt)
                         end,
                         on_eose = function()
+                            print("  EOSE", url, eoses[url], eoses[1], "/",
+                                  total_relays)
                             if not eoses[url] then
                                 eoses[url] = true
                                 eoses[1] = eoses[1] + 1
-                                if eoses[url] == total_relays then
+                                if eoses[1] == total_relays then
+                                    print("    ---")
                                     opts.on_eose()
                                 end
                             end

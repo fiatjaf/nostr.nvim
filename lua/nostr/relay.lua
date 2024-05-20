@@ -24,8 +24,7 @@ do
     end
     local function onready()
         -- Step the cqueues loop once (sleeping for max 0 seconds)
-        assert(cq:step(0))
-        reset_timer()
+        if cq:step(0) then reset_timer() end
     end
     -- Need to call `start` on libuv timer now
     -- to provide callback and so that `again` works
@@ -46,26 +45,37 @@ return function(url, relay_opts)
         connected = false,
         subscribe = function(_self, filter, sub_opts)
             serial = serial + 1
-
             local id = (sub_opts.label or '_') .. '-' .. serial
+
+            local function close()
+                if not subs[id] then return end
+
+                if not subs[id].eosed then
+                    subs[id].eosed = true
+                    subs[id].on_eose()
+                end
+                if sub_opts.on_closed then sub_opts.on_closed() end
+                subs[id] = nil
+                ws:send(rapidjson.encode({"CLOSE", id}))
+            end
+
             subs[id] = {
                 filter = filter,
                 eosed = false,
                 on_event = sub_opts.on_event or function(_evt) end,
                 on_eose = sub_opts.on_eose or function() end,
-                on_closed = sub_opts.on_closed or function(_reason) end
+                on_closed = function(reason)
+                    if sub_opts.on_closed then
+                        sub_opts.on_closed(reason)
+                    end
+                    close()
+                end
             }
             ws:send(rapidjson.encode({"REQ", id, filter}))
 
-            local function close()
-                if not subs[id].eosed then
-                    subs[id].eosed = true
-                    subs[id].on_eose()
-                end
-                subs[id].on_closed()
-                subs[id] = nil
-                ws:send(rapidjson.encode({"CLOSE", id}))
-            end
+            vim.defer_fn(function()
+                if subs[id] then subs[id].on_closed() end
+            end, 6000)
 
             return close
         end,
@@ -77,7 +87,12 @@ return function(url, relay_opts)
 
     a.run(function()
         local connected = ws:connect(2)
-        if (not connected) then return nil end
+        if (not connected) then
+            if (relay_opts.on_disconnect) then
+                relay_opts.on_disconnect()
+            end
+            return nil
+        end
 
         relay.connected = true
         if (relay_opts.on_connect) then relay_opts.on_connect(relay) end
@@ -88,11 +103,13 @@ return function(url, relay_opts)
                 if not data then
                     print('[nostr][' .. url .. '] disconnected')
                     relay.connected = false
-                    relay_opts.on_disconnect()
+                    if (relay_opts.on_disconnect) then
+                        relay_opts.on_disconnect()
+                    end
                     break
                 end
 
-                print('[nostr][' .. url .. '] message ' .. data)
+                -- print('[nostr][' .. url .. '] message ' .. data)
 
                 local msg = rapidjson.decode(data)
                 if (msg[1] == 'EVENT') then
@@ -125,7 +142,7 @@ return function(url, relay_opts)
                 end
             end
         end)
-    end)
+    end, function() end)
 
     return relay
 end
